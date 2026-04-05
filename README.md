@@ -1,4 +1,4 @@
-# Đồ Án / Bài Tập Lớn: Lập Trình Driver Khóa Linux
+# Bài Tập Lớn: Lập Trình Driver Khóa Linux
 
 Kho lưu trữ này chứa hai đồ án thực hành môn lập trình Device Driver trên nhân hệ điều hành Linux (Ubuntu). 
 
@@ -33,4 +33,4 @@ Dự án được chia làm 2 bài tập độc lập với các thư mục riê
 >    usb.generic.allowHID = "TRUE"
 >    usb.generic.allowLastHID = "TRUE"
 >    ```
-> 5. Bấm Lưu (Ctrl+S) và mở lại máy ảo. Bạn có thể chộp con chuột vào máy ảo bằng thẻ menu: *VM $\rightarrow$ Removable Devices $\rightarrow$ [Tên Chuột của bạn] $\rightarrow$ Connect*.
+> 5. Bấm Lưu (Ctrl+S) và mở lại máy ảo. Bạn có thể chộp con chuột vào máy ảo bằng thẻ menu: *VM → Removable Devices → [Tên Chuột của bạn] → Connect*.
