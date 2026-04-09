@@ -102,7 +102,7 @@ Khi giải mã, `file_manager` sẽ kiểm duyệt cắt bỏ 24 bytes vùng nà
 
 ---
 
-## 3. Hướng Dẫn Biên Dịch Và Chạy (Bài 1)
+## 3. Hướng Dẫn Biên Dịch Và Chạy
 
 ### 3.1 Nạp Driver vào Kernel Linux
 Mở Terminal, di chuyển vào thư mục `driver/` và biên dịch:
@@ -122,7 +122,7 @@ sudo insmod camellia_drv.ko
 ls -la /dev/camellia_drv
 ```
 
-### 3.2 Biên Dịch Ứng Dụng Userspace & Test File Thực Tế
+### 3.2 Biên Dịch Ứng Dụng CLI (terminal) & Test File Thực Tế
 Sau khi có Driver, bạn lùi ra ngoài thư mục `app` để dùng công cụ test:
 ```bash
 cd ../app
@@ -148,3 +148,82 @@ echo "Mat khau wifi nha minh la: 12345678" > secret.txt
 ./file_manager decrypt secret.txt.enc
 ```
 Để gỡ toàn bộ và hủy thiết bị, bạn chạy `sudo rmmod camellia_drv`.
+
+---
+
+### 3.3 Chạy Giao Diện GUI (PyQt6) - Ứng Dụng Đồ Họa
+
+#### Bước 1: Cài đặt thư viện Python
+```bash
+pip install PyQt6
+```
+Hoặc nếu dùng `pip3`:
+```bash
+pip3 install PyQt6
+```
+
+#### Bước 2: Đảm bảo Driver đã được nạp
+```bash
+# Nếu chưa nạp, chạy lệnh sau:
+cd driver
+make
+sudo modprobe camellia_generic
+sudo insmod camellia_drv.ko
+
+# Kiểm tra:
+ls -la /dev/camellia_drv
+```
+
+#### Bước 3: Khởi chạy giao diện GUI
+```bash
+cd app
+python3 file_manager_gui.py
+```
+
+#### Bước 4: Đăng nhập
+Khi giao diện mở lên, bạn sẽ thấy **màn hình đăng nhập bảo mật**.  
+Nhập mật khẩu: `haiproFF8604` rồi nhấn **ĐĂNG NHẬP** (hoặc nhấn Enter).
+
+> **Lưu ý bảo mật:**
+> - Mật khẩu được kiểm tra qua hàm băm SHA-256 (không lưu plaintext)
+> - Nếu nhập sai 5 lần liên tục, tài khoản sẽ bị **khóa 30 giây**
+> - Có hiệu ứng rung (shake) khi nhập sai mật khẩu
+
+#### Bước 5: Sử dụng các chức năng
+
+Sau khi đăng nhập thành công, giao diện chính gồm 4 tab:
+
+| Tab | Chức năng |
+|-----|-----------|
+| 🔒 **Mã hóa** | Thêm file (đơn/nhiều/thư mục) → Mã hóa tất cả → file `.enc` |
+| 🔓 **Giải mã** | Thêm file `.enc` (đơn/nhiều/thư mục) → Giải mã tất cả → file gốc |
+| 📁 **Quản lý** | Quét thư mục, liệt kê file `.enc`, xem hoặc giải mã nhanh |
+| 👁 **Xem file** | Chọn file `.enc`, xem nội dung đã giải mã (không cần xuất file) |
+
+**Tính năng nổi bật:**
+- ✅ **Mã hóa nhiều file cùng lúc** (batch processing)
+- ✅ **Kéo thả file** trực tiếp vào giao diện
+- ✅ **Thêm cả thư mục** (tự động quét tất cả file trong thư mục)
+- ✅ **Xem nội dung file mã hóa** mà không cần giải mã ra file
+- ✅ **Thanh tiến trình (progress bar)** theo dõi tiến độ xử lý
+- ✅ **Nhật ký hoạt động** (log console) ghi lại mọi thao tác
+- ✅ **Kiểm tra trạng thái driver** tự động mỗi 5 giây
+- ✅ **Đăng xuất** khi muốn khóa lại ứng dụng
+
+---
+
+## 4. Cấu Trúc Thư Mục
+
+```
+bai1_crypto_camellia/
+├── README.md                    # File hướng dẫn này
+├── driver/
+│   ├── camellia_drv.c           # Mã nguồn Kernel Driver
+│   ├── camellia_drv.h           # Header định nghĩa IOCTL
+│   ├── Makefile                 # Biên dịch driver
+│   └── camellia_drv.ko          # Module kernel (sau khi make)
+└── app/
+    ├── file_manager.c           # Ứng dụng CLI (C)
+    ├── file_manager_gui.py      # Ứng dụng GUI (Python/PyQt6) ← MỚI
+    └── Makefile                 # Biên dịch app CLI
+```
