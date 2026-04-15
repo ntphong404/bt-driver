@@ -1,0 +1,1 @@
+savedcmd_/home/ntp/Desktop/bt-driver/bai2_usb_mouse/phong_mouse.mod := printf '%s\n'   phong_mouse.o | awk '!x[$$0]++ { print("/home/ntp/Desktop/bt-driver/bai2_usb_mouse/"$$0) }' > /home/ntp/Desktop/bt-driver/bai2_usb_mouse/phong_mouse.mod

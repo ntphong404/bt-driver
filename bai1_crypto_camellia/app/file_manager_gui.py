@@ -28,34 +28,44 @@ import base64
 from pathlib import Path
 from typing import Optional
 
+# ===== Kiểm tra từng thư viện =====
+print("📦 Checking libraries...")
 try:
+    print("  ✓ Checking bcrypt...", end=" ")
     import bcrypt
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.backends import default_backend
-except ImportError:
-    print("❌ Lỗi: cần cài đặt thư viện 'bcrypt' và 'cryptography'")
-    print("   Chạy: pip install bcrypt cryptography")
+    print("OK")
+except ImportError as e:
+    print(f"❌ FAILED: {e}")
     sys.exit(1)
 
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QFileDialog, QTextEdit, QProgressBar,
-    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget,
-    QMessageBox, QFrame, QSplitter, QGroupBox, QLineEdit,
-    QSizePolicy, QAbstractItemView, QStyle, QCheckBox,
-    QGraphicsOpacityEffect, QStackedWidget, QDialog
-)
-from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QSize, QTimer, QPropertyAnimation,
-    QEasingCurve, QMimeData, QSequentialAnimationGroup,
-    QParallelAnimationGroup, QPoint, QRect
-)
-from PyQt6.QtGui import (
-    QFont, QColor, QPalette, QIcon, QDragEnterEvent, QDropEvent,
-    QLinearGradient, QPainter, QPixmap, QFontDatabase,
-    QKeySequence, QShortcut
-)
+try:
+    print("  ✓ Checking PyQt6...", end=" ")
+    from PyQt6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QLabel, QPushButton, QFileDialog, QTextEdit, QProgressBar,
+        QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget,
+        QMessageBox, QFrame, QSplitter, QGroupBox, QLineEdit,
+        QSizePolicy, QAbstractItemView, QStyle, QCheckBox,
+        QGraphicsOpacityEffect, QStackedWidget, QDialog
+    )
+    from PyQt6.QtCore import (
+        Qt, QThread, pyqtSignal, QSize, QTimer, QPropertyAnimation,
+        QEasingCurve, QMimeData, QSequentialAnimationGroup,
+        QParallelAnimationGroup, QPoint, QRect
+    )
+    from PyQt6.QtGui import (
+        QFont, QColor, QPalette, QIcon, QDragEnterEvent, QDropEvent,
+        QLinearGradient, QPainter, QPixmap, QFontDatabase,
+        QKeySequence, QShortcut
+    )
+    print("OK")
+except ImportError as e:
+    print(f"❌ FAILED: {e}")
+    sys.exit(1)
+
+print("✅ All libraries loaded successfully!\n")
+
+
 
 # ===== Hằng số =====
 DEVICE_PATH = "/dev/camellia_drv"
@@ -77,27 +87,24 @@ KDF_SALT = b"CAMELLIA_VAULT_2026"
 
 def _derive_key_from_password(password: str) -> bytes:
     """Sinh encryption key từ password bằng PBKDF2 (16 bytes)"""
-    kdf = PBKDF2(
-        algorithm=hashes.SHA256(),
-        length=CAMELLIA_KEY_SIZE,  # 16 bytes
-        salt=KDF_SALT,
-        iterations=100000,
-        backend=default_backend()
-    )
-    return kdf.derive(password.encode())
+    import hashlib
+    return hashlib.pbkdf2_hmac('sha256', password.encode(), KDF_SALT, 100000, dklen=CAMELLIA_KEY_SIZE)
 
 
 def _load_config() -> tuple:
     """
     Đọc cấu hình từ file
     Trả về: (password_hash_bcrypt, encryption_key_bytes, is_first_setup)
+    - Nếu file không tồn tại: return (None, None, True) - lần đầu tiên
+    - Nếu file tồn tại: return (pw_hash, enc_key, False)
     """
     if os.path.isfile(PASSWORD_FILE):
         try:
             with open(PASSWORD_FILE, "r") as f:
                 data = json.load(f)
-                pw_hash = data.get("password_hash", "").encode() if data.get("password_hash") else None
+                pw_hash_b64 = data.get("password_hash", "")
                 enc_key_b64 = data.get("encryption_key", "")
+                pw_hash = base64.b64decode(pw_hash_b64) if pw_hash_b64 else None
                 enc_key = base64.b64decode(enc_key_b64) if enc_key_b64 else None
                 
                 if pw_hash and enc_key:
@@ -105,11 +112,8 @@ def _load_config() -> tuple:
         except Exception:
             pass
     
-    # First setup: create default config
-    default_key = _derive_key_from_password(DEFAULT_PASSWORD)
-    pw_hash = bcrypt.hashpw(DEFAULT_PASSWORD.encode(), bcrypt.gensalt())
-    _save_config(pw_hash, default_key)
-    return pw_hash, default_key, True
+    # File không tồn tại - lần đầu tiên
+    return None, None, True
 
 
 def _save_config(pw_hash_bcrypt: bytes, encryption_key: bytes):
@@ -122,7 +126,7 @@ def _save_config(pw_hash_bcrypt: bytes, encryption_key: bytes):
     try:
         with open(PASSWORD_FILE, "w") as f:
             json.dump({
-                "password_hash": pw_hash_bcrypt.decode(),  # bcrypt hash
+                "password_hash": base64.b64encode(pw_hash_bcrypt).decode(),  # bcrypt hash (base64)
                 "encryption_key": base64.b64encode(encryption_key).decode()  # fixed key
             }, f)
         os.chmod(PASSWORD_FILE, 0o600)  # Chỉ owner đọc/ghi
@@ -258,8 +262,16 @@ def driver_decrypt(cipher: bytes, key: bytes, iv: bytes) -> Optional[bytes]:
         os.close(fd)
 
 
-def encrypt_file(input_path: str, key: bytes) -> str:
-    """Mã hóa 1 file → file.enc, trả về đường dẫn output"""
+def encrypt_file(input_path: str, key: bytes, output_folder: str = None) -> str:
+    """Mã hóa 1 file → file.enc, xóa file gốc nếu thành công
+    
+    Args:
+        input_path: Đường dẫn file cần mã hóa
+        key: Encryption key
+        output_folder: Thư mục lưu file mã hóa (mặc định: cùng thư mục file gốc)
+    
+    Return: Đường dẫn file .enc
+    """
     with open(input_path, "rb") as f:
         plain = f.read()
 
@@ -271,12 +283,21 @@ def encrypt_file(input_path: str, key: bytes) -> str:
     iv = gen_random_iv()
     cipher = driver_encrypt(plain, key, iv)
 
-    out_path = input_path + ENC_EXTENSION
+    # Xác định tên file output
+    basename = os.path.basename(input_path)
+    if output_folder is None:
+        output_folder = os.path.dirname(input_path)
+    
+    out_path = os.path.join(output_folder, basename + ENC_EXTENSION)
+    
     with open(out_path, "wb") as f:
         header = struct.pack(ENC_HEADER_FORMAT, ENC_MAGIC, len(plain), iv)
         f.write(header)
         f.write(cipher)
 
+    # Xóa file gốc nếu mã hóa thành công
+    os.remove(input_path)
+    
     return out_path
 
 
@@ -342,11 +363,13 @@ class CryptoWorker(QThread):
     file_done = pyqtSignal(str, str, bool)   # input_path, output_path/error, success
     all_done = pyqtSignal(int, int)          # success_count, total_count
 
-    def __init__(self, files: list, mode: str, key: bytes):
+    def __init__(self, files: list, mode: str, key: bytes, enc_output_folder: str = None, dec_output_folder: str = None):
         super().__init__()
         self.files = files
         self.mode = mode  # "encrypt" or "decrypt"
         self.key = key
+        self.enc_output_folder = enc_output_folder  # For encrypt mode
+        self.dec_output_folder = dec_output_folder  # For decrypt mode
         self._cancelled = False
 
     def cancel(self):
@@ -366,7 +389,7 @@ class CryptoWorker(QThread):
 
             try:
                 if self.mode == "encrypt":
-                    out = encrypt_file(filepath, self.key)
+                    out = encrypt_file(filepath, self.key, self.enc_output_folder)
                 else:
                     out = decrypt_file(filepath, self.key)
                 self.file_done.emit(filepath, out, True)
@@ -383,7 +406,7 @@ class CryptoWorker(QThread):
 # ═══════════════════════════════════════════════════════════════
 class LoginScreen(QWidget):
     """Màn hình đăng nhập bảo mật"""
-    login_success = pyqtSignal()
+    login_success = pyqtSignal(bool)  # Pass is_first_setup flag
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -509,21 +532,24 @@ class LoginScreen(QWidget):
             self._show_error("Vui lòng nhập mật khẩu!")
             return
 
-        # Kiểm tra mật khẩu bằng bcrypt (không thể dịch ngược)
         try:
-            # password_hash_bcrypt được lưu từ parent window
-            from bai1_crypto_camellia.app.file_manager_gui import CamelliaFileManager
-            main_window = self.window() if hasattr(self, 'window') else None
+            pw_hash_bcrypt, _, is_first_setup = _load_config()
             
-            # Lấy pw_hash từ config
-            pw_hash_bcrypt, _, _ = _load_config()
-            
-            # Verify
-            if bcrypt.checkpw(password.encode(), pw_hash_bcrypt):
-                self._error_label.setVisible(False)
-                self.login_success.emit()
+            if is_first_setup:
+                # Lần đầu tiên - so sánh với password mặc định
+                if password == DEFAULT_PASSWORD:
+                    self._error_label.setVisible(False)
+                    self.login_success.emit(True)  # True = first setup
+                else:
+                    raise ValueError("Sai mật khẩu mặc định")
             else:
-                raise ValueError("Sai mật khẩu")
+                # Đã có config - verify bằng bcrypt
+                if bcrypt.checkpw(password.encode(), pw_hash_bcrypt):
+                    self._error_label.setVisible(False)
+                    self.login_success.emit(False)  # False = not first setup
+                else:
+                    raise ValueError("Sai mật khẩu")
+                    
         except Exception as e:
             self._failed_attempts += 1
             remaining = 5 - self._failed_attempts
@@ -811,6 +837,11 @@ class CamelliaFileManager(QMainWindow):
 
         # Load config: password_hash, encryption_key, is_first_setup
         self._pw_hash_bcrypt, self._encryption_key, self._is_first_setup = _load_config()
+        
+        # Nếu lần đầu tiên, sinh encryption key từ password mặc định
+        if self._is_first_setup:
+            self._encryption_key = _derive_key_from_password(DEFAULT_PASSWORD)
+        
         self._current_key = self._encryption_key  # KEY cố định
         
         self._worker = None
@@ -845,10 +876,10 @@ class CamelliaFileManager(QMainWindow):
 
         main_layout.addWidget(self._stack)
 
-    def _on_login_success(self):
+    def _on_login_success(self, is_first_setup: bool):
         """Chuyển sang trang chính sau khi đăng nhập thành công"""
         # Nếu lần đầu setup, bắt đổi mật khẩu
-        if self._is_first_setup:
+        if is_first_setup:
             self._log_msg("⚙️ Lần đầu tiên! Bắt buộc đổi mật khẩu...")
             dialog = ChangePasswordDialog(self, is_first_setup=True)
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -862,10 +893,11 @@ class CamelliaFileManager(QMainWindow):
                 self._log_msg("✅ Mật khẩu đã được đặt! KEY mã hóa cố định.")
                 self._update_driver_status()
             else:
-                # Reject = logout
+                # Nếu user cancel dialog, quay lại login
                 self._login_screen._password_input.clear()
-                self._login_screen._password_input.setFocus()
+                return
         else:
+            # Lần sau - chỉ hiển thị trang chính
             self._stack.setCurrentIndex(1)
             self._log_msg("🔓 Đăng nhập thành công!")
             self._update_driver_status()
@@ -1035,6 +1067,25 @@ class CamelliaFileManager(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(12)
+
+        # === Chọn thư mục lưu ===
+        output_layout = QHBoxLayout()
+        output_label = QLabel("📁 Thư mục lưu file mã hóa:")
+        output_label.setStyleSheet("font-weight: bold;")
+        output_layout.addWidget(output_label)
+        
+        self._enc_output_folder = os.path.expanduser("~")  # Mặc định: home
+        self._enc_output_display = QLineEdit()
+        self._enc_output_display.setText(self._enc_output_folder)
+        self._enc_output_display.setReadOnly(True)
+        output_layout.addWidget(self._enc_output_display)
+        
+        btn_browse_output = QPushButton("🗂  Chọn thư mục")
+        btn_browse_output.setObjectName("btnSecondary")
+        btn_browse_output.clicked.connect(self._enc_choose_output_folder)
+        output_layout.addWidget(btn_browse_output)
+        
+        layout.addLayout(output_layout)
 
         # Drop zone
         self._enc_drop = DropZone("Kéo thả file cần mã hóa vào đây\nhoặc nhấn nút bên dưới")
@@ -1281,6 +1332,16 @@ class CamelliaFileManager(QMainWindow):
                 self._enc_files.append(f)
         self._enc_refresh_table()
 
+    def _enc_choose_output_folder(self):
+        """Chọn thư mục lưu file mã hóa"""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Chọn thư mục lưu file mã hóa", self._enc_output_folder
+        )
+        if folder:
+            self._enc_output_folder = folder
+            self._enc_output_display.setText(folder)
+            self._log_msg(f"📁 Thư mục lưu được đặt: {folder}")
+
     def _enc_add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "Chọn file để mã hóa", os.getcwd(), "Tất cả (*)"
@@ -1349,13 +1410,17 @@ class CamelliaFileManager(QMainWindow):
 
         self._log_msg("═" * 50)
         self._log_msg(f"🔒 Bắt đầu mã hóa {len(self._enc_files)} file...")
+        self._log_msg(f"📁 Lưu đến: {self._enc_output_folder}")
 
         self._progress_bar.setVisible(True)
         self._progress_label.setVisible(True)
         self._progress_bar.setMaximum(len(self._enc_files))
         self._progress_bar.setValue(0)
 
-        self._worker = CryptoWorker(self._enc_files.copy(), "encrypt", self._current_key)
+        self._worker = CryptoWorker(
+            self._enc_files.copy(), "encrypt", self._current_key,
+            enc_output_folder=self._enc_output_folder
+        )
         self._worker.progress.connect(self._on_progress)
         self._worker.file_done.connect(lambda inp, out, ok: self._on_file_done(inp, out, ok, self._enc_table, self._enc_files))
         self._worker.all_done.connect(self._on_all_done)

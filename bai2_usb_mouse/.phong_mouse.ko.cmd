@@ -1,0 +1,1 @@
+savedcmd_/home/ntp/Desktop/bt-driver/bai2_usb_mouse/phong_mouse.ko := ld -r -m elf_x86_64 -z noexecstack --build-id=sha1  -T scripts/module.lds -o /home/ntp/Desktop/bt-driver/bai2_usb_mouse/phong_mouse.ko /home/ntp/Desktop/bt-driver/bai2_usb_mouse/phong_mouse.o /home/ntp/Desktop/bt-driver/bai2_usb_mouse/phong_mouse.mod.o

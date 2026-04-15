@@ -1,0 +1,1 @@
+savedcmd_/home/ntp/Desktop/bt-driver/bai2_usb_mouse/Module.symvers :=  scripts/mod/modpost -M -m -a      -o /home/ntp/Desktop/bt-driver/bai2_usb_mouse/Module.symvers -T /home/ntp/Desktop/bt-driver/bai2_usb_mouse/modules.order -i Module.symvers -e 
