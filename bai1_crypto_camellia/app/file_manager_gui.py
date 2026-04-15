@@ -24,8 +24,19 @@ import time
 import hashlib
 import json
 import traceback
+import base64
 from pathlib import Path
 from typing import Optional
+
+try:
+    import bcrypt
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
+except ImportError:
+    print("❌ Lỗi: cần cài đặt thư viện 'bcrypt' và 'cryptography'")
+    print("   Chạy: pip install bcrypt cryptography")
+    sys.exit(1)
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -56,30 +67,64 @@ ENC_MAGIC_LEN = 4
 ENC_EXTENSION = ".enc"
 MAX_FILE_SIZE = 16 * 1024 * 1024  # 16 MB
 
-# File lưu mật khẩu (SHA-256 hash)
+# File lưu cấu hình: password_hash (bcrypt) + encryption_key (fixed)
 PASSWORD_FILE = os.path.join(os.path.expanduser("~"), ".camellia_vault_pass")
-DEFAULT_PASSWORD = "phongcube123"
+DEFAULT_PASSWORD = "camellia2026"  # Mật khẩu mặc định (chỉ dùng lần đầu, bắt đổi ngay)
+
+# KDF salt - để derive key từ password
+KDF_SALT = b"CAMELLIA_VAULT_2026"
 
 
-def _load_password_hash() -> str:
-    """Đọc password hash từ file, tạo mới nếu chưa có"""
+def _derive_key_from_password(password: str) -> bytes:
+    """Sinh encryption key từ password bằng PBKDF2 (16 bytes)"""
+    kdf = PBKDF2(
+        algorithm=hashes.SHA256(),
+        length=CAMELLIA_KEY_SIZE,  # 16 bytes
+        salt=KDF_SALT,
+        iterations=100000,
+        backend=default_backend()
+    )
+    return kdf.derive(password.encode())
+
+
+def _load_config() -> tuple:
+    """
+    Đọc cấu hình từ file
+    Trả về: (password_hash_bcrypt, encryption_key_bytes, is_first_setup)
+    """
     if os.path.isfile(PASSWORD_FILE):
         try:
             with open(PASSWORD_FILE, "r") as f:
                 data = json.load(f)
-                return data.get("hash", "")
+                pw_hash = data.get("password_hash", "").encode() if data.get("password_hash") else None
+                enc_key_b64 = data.get("encryption_key", "")
+                enc_key = base64.b64decode(enc_key_b64) if enc_key_b64 else None
+                
+                if pw_hash and enc_key:
+                    return pw_hash, enc_key, False
         except Exception:
             pass
-    # Tạo file mật khẩu mặc định lần đầu
-    _save_password_hash(hashlib.sha256(DEFAULT_PASSWORD.encode()).hexdigest())
-    return hashlib.sha256(DEFAULT_PASSWORD.encode()).hexdigest()
+    
+    # First setup: create default config
+    default_key = _derive_key_from_password(DEFAULT_PASSWORD)
+    pw_hash = bcrypt.hashpw(DEFAULT_PASSWORD.encode(), bcrypt.gensalt())
+    _save_config(pw_hash, default_key)
+    return pw_hash, default_key, True
 
 
-def _save_password_hash(pw_hash: str):
-    """Ghi password hash vào file"""
+def _save_config(pw_hash_bcrypt: bytes, encryption_key: bytes):
+    """
+    Lưu cấu hình: password_hash (bcrypt) + encryption_key (fixed)
+    
+    password_hash: dùng để verify khi login, không thể dịch ngược
+    encryption_key: cố định, sinh từ password lần đầu tiên
+    """
     try:
         with open(PASSWORD_FILE, "w") as f:
-            json.dump({"hash": pw_hash}, f)
+            json.dump({
+                "password_hash": pw_hash_bcrypt.decode(),  # bcrypt hash
+                "encryption_key": base64.b64encode(encryption_key).decode()  # fixed key
+            }, f)
         os.chmod(PASSWORD_FILE, 0o600)  # Chỉ owner đọc/ghi
     except Exception as e:
         print(f"Warning: không ghi được {PASSWORD_FILE}: {e}")
@@ -106,11 +151,6 @@ CAMELLIA_DECRYPT = _IOW(CAMELLIA_IOC_MAGIC, 2, PARAMS_SIZE)
 CAMELLIA_GET_LEN = _IOR(CAMELLIA_IOC_MAGIC, 3, ctypes.sizeof(ctypes.c_size_t))
 
 # Khóa mặc định (demo)
-DEFAULT_KEY = bytes([
-    0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
-    0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10
-])
-
 # ===== enc_header struct =====
 # magic[4] + orig_size(uint32) + iv[16] = 24 bytes
 ENC_HEADER_FORMAT = f"<{ENC_MAGIC_LEN}sI{CAMELLIA_KEY_SIZE}s"
@@ -218,7 +258,7 @@ def driver_decrypt(cipher: bytes, key: bytes, iv: bytes) -> Optional[bytes]:
         os.close(fd)
 
 
-def encrypt_file(input_path: str, key: bytes = DEFAULT_KEY) -> str:
+def encrypt_file(input_path: str, key: bytes) -> str:
     """Mã hóa 1 file → file.enc, trả về đường dẫn output"""
     with open(input_path, "rb") as f:
         plain = f.read()
@@ -240,7 +280,7 @@ def encrypt_file(input_path: str, key: bytes = DEFAULT_KEY) -> str:
     return out_path
 
 
-def decrypt_file(enc_path: str, key: bytes = DEFAULT_KEY) -> str:
+def decrypt_file(enc_path: str, key: bytes) -> str:
     """Giải mã file.enc → file gốc, trả về đường dẫn output"""
     with open(enc_path, "rb") as f:
         header_data = f.read(ENC_HEADER_SIZE)
@@ -274,7 +314,7 @@ def decrypt_file(enc_path: str, key: bytes = DEFAULT_KEY) -> str:
     return out_path
 
 
-def view_encrypted_file(enc_path: str, key: bytes = DEFAULT_KEY) -> bytes:
+def view_encrypted_file(enc_path: str, key: bytes) -> bytes:
     """Giải mã file.enc và trả về nội dung (không ghi ra file)"""
     with open(enc_path, "rb") as f:
         header_data = f.read(ENC_HEADER_SIZE)
@@ -302,7 +342,7 @@ class CryptoWorker(QThread):
     file_done = pyqtSignal(str, str, bool)   # input_path, output_path/error, success
     all_done = pyqtSignal(int, int)          # success_count, total_count
 
-    def __init__(self, files: list, mode: str, key: bytes = DEFAULT_KEY):
+    def __init__(self, files: list, mode: str, key: bytes):
         super().__init__()
         self.files = files
         self.mode = mode  # "encrypt" or "decrypt"
@@ -469,13 +509,22 @@ class LoginScreen(QWidget):
             self._show_error("Vui lòng nhập mật khẩu!")
             return
 
-        # Kiểm tra mật khẩu bằng SHA-256 hash
-        input_hash = hashlib.sha256(password.encode()).hexdigest()
-
-        if input_hash == _load_password_hash():
-            self._error_label.setVisible(False)
-            self.login_success.emit()
-        else:
+        # Kiểm tra mật khẩu bằng bcrypt (không thể dịch ngược)
+        try:
+            # password_hash_bcrypt được lưu từ parent window
+            from bai1_crypto_camellia.app.file_manager_gui import CamelliaFileManager
+            main_window = self.window() if hasattr(self, 'window') else None
+            
+            # Lấy pw_hash từ config
+            pw_hash_bcrypt, _, _ = _load_config()
+            
+            # Verify
+            if bcrypt.checkpw(password.encode(), pw_hash_bcrypt):
+                self._error_label.setVisible(False)
+                self.login_success.emit()
+            else:
+                raise ValueError("Sai mật khẩu")
+        except Exception as e:
             self._failed_attempts += 1
             remaining = 5 - self._failed_attempts
 
@@ -539,11 +588,12 @@ class LoginScreen(QWidget):
 class ChangePasswordDialog(QDialog):
     """Dialog đổi mật khẩu"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, is_first_setup=False):
         super().__init__(parent)
-        self.setWindowTitle("🔑 Đổi mật khẩu")
-        self.setFixedSize(440, 380)
+        self.setWindowTitle("🔑 Đặt mật khẩu" if is_first_setup else "🔑 Đổi mật khẩu")
+        self.setFixedSize(440, 380 if not is_first_setup else 340)
         self.setModal(True)
+        self.is_first_setup = is_first_setup
         self._setup_ui()
 
     def _setup_ui(self):
@@ -557,7 +607,7 @@ class ChangePasswordDialog(QDialog):
         icon.setStyleSheet("font-size: 40px;")
         layout.addWidget(icon)
 
-        title = QLabel("Đổi mật khẩu")
+        title = QLabel("Đặt mật khẩu" if self.is_first_setup else "Đổi mật khẩu")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(
             "font-size: 20px; font-weight: bold; color: #e8ecf1; "
@@ -565,18 +615,19 @@ class ChangePasswordDialog(QDialog):
         )
         layout.addWidget(title)
 
-        # Old password
-        lbl_old = QLabel("Mật khẩu hiện tại")
-        lbl_old.setStyleSheet("color: #8094aa; font-size: 12px; font-weight: 500; margin-bottom: 4px;")
-        layout.addWidget(lbl_old)
+        # Old password (hide if first setup)
+        if not self.is_first_setup:
+            lbl_old = QLabel("Mật khẩu hiện tại")
+            lbl_old.setStyleSheet("color: #8094aa; font-size: 12px; font-weight: 500; margin-bottom: 4px;")
+            layout.addWidget(lbl_old)
 
-        self._input_old = QLineEdit()
-        self._input_old.setEchoMode(QLineEdit.EchoMode.Password)
-        self._input_old.setPlaceholderText("Nhập mật khẩu cũ...")
-        self._input_old.setObjectName("dialogInput")
-        layout.addWidget(self._input_old)
+            self._input_old = QLineEdit()
+            self._input_old.setEchoMode(QLineEdit.EchoMode.Password)
+            self._input_old.setPlaceholderText("Nhập mật khẩu cũ...")
+            self._input_old.setObjectName("dialogInput")
+            layout.addWidget(self._input_old)
 
-        layout.addSpacing(12)
+            layout.addSpacing(12)
 
         # New password
         lbl_new = QLabel("Mật khẩu mới")
@@ -592,7 +643,7 @@ class ChangePasswordDialog(QDialog):
         layout.addSpacing(12)
 
         # Confirm new password
-        lbl_confirm = QLabel("Xác nhận mật khẩu mới")
+        lbl_confirm = QLabel("Xác nhận mật khẩu")
         lbl_confirm.setStyleSheet("color: #8094aa; font-size: 12px; font-weight: 500; margin-bottom: 4px;")
         layout.addWidget(lbl_confirm)
 
@@ -606,11 +657,11 @@ class ChangePasswordDialog(QDialog):
 
         # Buttons
         btn_row = QHBoxLayout()
-        btn_cancel = QPushButton("Hủy")
+        btn_cancel = QPushButton("Hủy" if not self.is_first_setup else "Thoát")
         btn_cancel.setObjectName("btnSecondary")
         btn_cancel.clicked.connect(self.reject)
 
-        btn_save = QPushButton("✅  Lưu mật khẩu")
+        btn_save = QPushButton("✅  " + ("Đặt lúc này" if self.is_first_setup else "Lưu mật khẩu"))
         btn_save.setObjectName("btnAction")
         btn_save.setMinimumHeight(38)
         btn_save.clicked.connect(self._do_change)
@@ -620,22 +671,29 @@ class ChangePasswordDialog(QDialog):
         btn_row.addWidget(btn_save)
         layout.addLayout(btn_row)
 
+        # Info nếu là first setup
+        if self.is_first_setup:
+            info = QLabel("💡 Khóa mã hóa sẽ được tạo từ mật khẩu này và không thể thay đổi.")
+            info.setStyleSheet("color: #6b7b8d; font-size: 11px; margin-top: 8px; font-style: italic;")
+            layout.addWidget(info)
+
     def _do_change(self):
-        old_pw = self._input_old.text()
+        old_pw = getattr(self, '_input_old', None)
         new_pw = self._input_new.text()
         confirm_pw = self._input_confirm.text()
 
-        if not old_pw:
-            QMessageBox.warning(self, "Lỗi", "Vui lòng nhập mật khẩu hiện tại!")
-            return
+        # Verify old password if not first setup
+        if not self.is_first_setup:
+            if not old_pw.text():
+                QMessageBox.warning(self, "Lỗi", "Vui lòng nhập mật khẩu hiện tại!")
+                return
 
-        # Verify old password
-        old_hash = hashlib.sha256(old_pw.encode()).hexdigest()
-        if old_hash != _load_password_hash():
-            QMessageBox.warning(self, "Lỗi", "❌ Mật khẩu hiện tại không đúng!")
-            self._input_old.clear()
-            self._input_old.setFocus()
-            return
+            pw_hash_bcrypt, _, _ = _load_config()
+            if not bcrypt.checkpw(old_pw.text().encode(), pw_hash_bcrypt):
+                QMessageBox.warning(self, "Lỗi", "❌ Mật khẩu hiện tại không đúng!")
+                old_pw.clear()
+                old_pw.setFocus()
+                return
 
         if len(new_pw) < 4:
             QMessageBox.warning(self, "Lỗi", "Mật khẩu mới phải có tối thiểu 4 ký tự!")
@@ -647,15 +705,14 @@ class ChangePasswordDialog(QDialog):
             self._input_confirm.setFocus()
             return
 
-        if new_pw == old_pw:
-            QMessageBox.warning(self, "Lỗi", "Mật khẩu mới phải khác mật khẩu cũ!")
-            return
+        # Only update password hash, NOT encryption key
+        pw_hash = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt())
+        _, encryption_key, _ = _load_config()
+        _save_config(pw_hash, encryption_key)
 
-        # Save new password
-        new_hash = hashlib.sha256(new_pw.encode()).hexdigest()
-        _save_password_hash(new_hash)
-
-        QMessageBox.information(self, "Thành công", "✅ Đổi mật khẩu thành công!")
+        msg = "✅ Mật khẩu đã được đặt!" if self.is_first_setup else "✅ Đổi mật khẩu thành công!"
+        extra = "\n💡 Khóa mã hóa vẫn không đổi, file cũ vẫn decrypt được." if not self.is_first_setup else ""
+        QMessageBox.information(self, "Thành công", msg + extra)
         self.accept()
 
 
@@ -752,7 +809,10 @@ class CamelliaFileManager(QMainWindow):
         self.setMinimumSize(1000, 700)
         self.resize(1100, 780)
 
-        self._current_key = DEFAULT_KEY
+        # Load config: password_hash, encryption_key, is_first_setup
+        self._pw_hash_bcrypt, self._encryption_key, self._is_first_setup = _load_config()
+        self._current_key = self._encryption_key  # KEY cố định
+        
         self._worker = None
         self._selected_files = []
 
@@ -787,9 +847,28 @@ class CamelliaFileManager(QMainWindow):
 
     def _on_login_success(self):
         """Chuyển sang trang chính sau khi đăng nhập thành công"""
-        self._stack.setCurrentIndex(1)
-        self._log_msg("🔓 Đăng nhập thành công!")
-        self._update_driver_status()
+        # Nếu lần đầu setup, bắt đổi mật khẩu
+        if self._is_first_setup:
+            self._log_msg("⚙️ Lần đầu tiên! Bắt buộc đổi mật khẩu...")
+            dialog = ChangePasswordDialog(self, is_first_setup=True)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                new_pw = dialog._input_new.text()
+                pw_hash = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt())
+                _save_config(pw_hash, self._encryption_key)
+                self._pw_hash_bcrypt = pw_hash
+                self._is_first_setup = False
+                self._stack.setCurrentIndex(1)
+                self._log_msg("🔓 Đăng nhập thành công!")
+                self._log_msg("✅ Mật khẩu đã được đặt! KEY mã hóa cố định.")
+                self._update_driver_status()
+            else:
+                # Reject = logout
+                self._login_screen._password_input.clear()
+                self._login_screen._password_input.setFocus()
+        else:
+            self._stack.setCurrentIndex(1)
+            self._log_msg("🔓 Đăng nhập thành công!")
+            self._update_driver_status()
 
     def _build_main_page(self):
         """Xây dựng trang chính (sau login)"""
@@ -947,7 +1026,7 @@ class CamelliaFileManager(QMainWindow):
 
     def _open_change_password(self):
         """Mở dialog đổi mật khẩu"""
-        dialog = ChangePasswordDialog(self)
+        dialog = ChangePasswordDialog(self, is_first_setup=False)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._log_msg("🔑 Đã đổi mật khẩu thành công!")
 
